@@ -23,15 +23,33 @@
             border: 3px solid #333;
             border-radius: 8px;
             overflow: hidden;
+            /* Required to position the target box correctly */
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
         video { width: 100%; display: block; background: #000; }
+        
+        /* The Visual Targeting Box */
+        #target-box {
+            position: absolute;
+            width: 50%;
+            height: 30%;
+            border: 3px dashed #00ff00;
+            box-sizing: border-box;
+            z-index: 10;
+            /* Dims the surrounding video so you know what is being ignored */
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); 
+            pointer-events: none;
+        }
+
         canvas { display: none; }
         #status {
             margin-top: 15px; padding: 10px; background: #222;
             border-radius: 6px; width: 100%; max-width: 380px; text-align: center;
         }
         #log {
-            margin-top: 15px; width: 100%; max-width: 380px; height: 200px;
+            margin-top: 15px; width: 100%; max-width: 380px; height: 180px;
             background: #000; color: #0f0; padding: 10px;
             font-family: monospace; overflow-y: auto; border-radius: 6px;
         }
@@ -45,6 +63,8 @@
     
     <div id="video-container">
         <video id="webcam" autoplay playsinline></video>
+        <!-- The targeting overlay -->
+        <div id="target-box"></div> 
     </div>
     
     <canvas id="captureCanvas"></canvas>
@@ -61,14 +81,12 @@
         // --- CONFIGURATION ---
         const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbw3cTkPeC1rqETIDWgqJhsKdWOygcKr-gSByLXqi47I6E_NCmkqZEfR9-BIHHxZnM2K7g/exec"; 
         const DEBOUNCE_MS = 300000; 
-        const SCAN_INTERVAL_MS = 1000; // Scans every 1 second
-        const REQUIRED_MATCHES = 2;    // Must read the exact same number 2 times to confirm
+        const SCAN_INTERVAL_MS = 500;  // Sped up to catch the cabin while centered
+        const REQUIRED_MATCHES = 2;    
         // ---------------------
         
         let worker;
         const recentReads = {}; 
-        
-        // Error Correction State
         let pendingCabinId = null;
         let matchStreak = 0;
 
@@ -102,8 +120,6 @@
                 video.srcObject = stream;
 
                 video.onplaying = () => {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
                     logMessage("Camera active. Starting scan loop.");
                     setInterval(scanFrame, SCAN_INTERVAL_MS);
                 };
@@ -116,54 +132,60 @@
         async function scanFrame() {
             if (video.paused || video.ended) return;
 
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Define the crop area to match the CSS target box (Center 50% width, 30% height)
+            const videoW = video.videoWidth;
+            const videoH = video.videoHeight;
+            const cropW = videoW * 0.5;
+            const cropH = videoH * 0.3;
+            const cropX = (videoW - cropW) / 2;
+            const cropY = (videoH - cropH) / 2;
+
+            // Size the hidden canvas strictly to the cropped dimensions
+            canvas.width = cropW;
+            canvas.height = cropH;
+
+            // Draw ONLY the cropped center of the video feed to the canvas
+            ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+            
             const imageData = canvas.toDataURL('image/jpeg');
 
             try {
                 const { data: { text } } = await worker.recognize(imageData);
                 const cleanedText = text.replace(/\s+/g, '');
 
-                // If Tesseract sees nothing, keep the streak alive but wait
                 if (cleanedText.length === 0) {
                     statusDiv.innerText = pendingCabinId 
                         ? `Lost sight of ${pendingCabinId}... waiting` 
-                        : "Waiting for cabin...";
+                        : "Waiting for cabin in target box...";
                     return; 
                 }
 
-                // Ensure it is 1 to 3 digits
                 if (/^\d{1,3}$/.test(cleanedText)) {
                     const cabinNum = parseInt(cleanedText, 10);
                     
-                    // Strict limit: Cabins 1 through 111
                     if (cabinNum >= 1 && cabinNum <= 111) {
-                        
-                        // Error Correction: Check if it matches the pending read
                         if (pendingCabinId === cabinNum) {
                             matchStreak++;
                             statusDiv.innerText = `Confirming ${cabinNum}... (${matchStreak}/${REQUIRED_MATCHES})`;
                             
-                            // If it hits the required streak, log it!
                             if (matchStreak >= REQUIRED_MATCHES) {
                                 handleDetection(cabinNum);
-                                pendingCabinId = null; // Reset streak
+                                pendingCabinId = null; 
                                 matchStreak = 0;
                             }
                         } else {
-                            // Start a new streak for a newly spotted number
                             pendingCabinId = cabinNum;
                             matchStreak = 1;
                             statusDiv.innerText = `Spotted ${cabinNum}, waiting to verify...`;
                         }
-                        
                     } else {
                         statusDiv.innerText = `Ignored (Out of range): ${cabinNum}`;
-                        pendingCabinId = null; // Break streak
+                        pendingCabinId = null; 
                         matchStreak = 0;
                     }
                 } else {
                     statusDiv.innerText = `Ignored (Not a valid number): ${cleanedText}`;
-                    pendingCabinId = null; // Break streak
+                    pendingCabinId = null; 
                     matchStreak = 0;
                 }
             } catch (err) {
