@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gondola OCR Tracker</title>
+    <!-- Load Tesseract.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #111;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            border: 3px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        video {
+            width: 100%;
+            display: block;
+            background: #000;
+        }
+        canvas {
+            display: none; 
+        }
+        #status {
+            margin-top: 15px;
+            padding: 10px;
+            background: #222;
+            border-radius: 6px;
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+        }
+        #log {
+            margin-top: 15px;
+            width: 100%;
+            max-width: 380px;
+            height: 200px;
+            background: #000;
+            color: #0f0;
+            padding: 10px;
+            font-family: monospace;
+            overflow-y: auto;
+            border-radius: 6px;
+        }
+        .highlight {
+            color: #ffaa00;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Cabin OCR Scanner</h2>
+    
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+    </div>
+    
+    <canvas id="captureCanvas"></canvas>
+
+    <div id="status">Initializing Tesseract.js...</div>
+    <div id="log"></div>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('captureCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const logDiv = document.getElementById('log');
+
+        // --- CONFIGURATION ---
+        // REPLACE THIS with your actual Google Apps Script web app URL or Zapier webhook
+        const WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"; 
+        const DEBOUNCE_MS = 60000; // 60 seconds before logging the same cabin again
+        const SCAN_INTERVAL_MS = 1000; // 1 second between frame scans
+        // ---------------------
+        
+        let worker;
+        const recentReads = {}; 
+
+        function logMessage(msg, isHighlight = false) {
+            const time = new Date().toLocaleTimeString();
+            const span = document.createElement('div');
+            span.innerHTML = `[${time}] ${msg}`;
+            if (isHighlight) span.className = 'highlight';
+            logDiv.prepend(span); 
+        }
+
+        async function init() {
+            try {
+                worker = await Tesseract.createWorker('eng', 1, {
+                    logger: m => {
+                        if(m.status === "recognizing text") {
+                           statusDiv.innerText = `Scanning frame... ${Math.round(m.progress * 100)}%`;
+                        }
+                    }
+                });
+                
+                await worker.setParameters({
+                    tessedit_char_whitelist: '0123456789',
+                });
+
+                logMessage("Tesseract initialized.");
+                statusDiv.innerText = "Requesting camera access...";
+
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" } 
+                });
+                video.srcObject = stream;
+
+                video.onplaying = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    logMessage("Camera active. Starting scan loop.");
+                    setInterval(scanFrame, SCAN_INTERVAL_MS);
+                };
+
+            } catch (err) {
+                logMessage(`Error: ${err.message}`);
+                statusDiv.innerText = "Failed to start. Check permissions.";
+            }
+        }
+
+        async function scanFrame() {
+            if (video.paused || video.ended) return;
+
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = canvas.toDataURL('image/jpeg');
+
+            try {
+                const { data: { text } } = await worker.recognize(imageData);
+                const cabinNumber = text.trim();
+
+                if (cabinNumber.length > 0) {
+                    handleDetection(cabinNumber);
+                } else {
+                    statusDiv.innerText = "Waiting for cabin...";
+                }
+            } catch (err) {
+                console.error("OCR Error:", err);
+            }
+        }
+
+        function handleDetection(cabinId) {
+            const now = Date.now();
+
+            if (recentReads[cabinId] && (now - recentReads[cabinId]) < DEBOUNCE_MS) {
+                statusDiv.innerText = `Cabin ${cabinId} detected (debounced)`;
+                return;
+            }
+
+            recentReads[cabinId] = now;
+            logMessage(`✅ Cabin ${cabinId} Arrived!`, true);
+            statusDiv.innerText = `Logged Cabin ${cabinId}`;
+
+            fetch(WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                mode: 'no-cors', // Important to prevent CORS errors on simple webhook posts
+                body: JSON.stringify({
+                    cabin_id: cabinId,
+                    timestamp: new Date().toISOString(),
+                    method: "browser_ocr"
+                })
+            }).then(() => {
+                logMessage(`Webhook triggered for ${cabinId}`);
+            }).catch(err => {
+                logMessage(`Webhook error: ${err.message}`);
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
