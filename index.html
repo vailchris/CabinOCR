@@ -61,11 +61,16 @@
         // --- CONFIGURATION ---
         const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbw3cTkPeC1rqETIDWgqJhsKdWOygcKr-gSByLXqi47I6E_NCmkqZEfR9-BIHHxZnM2K7g/exec"; 
         const DEBOUNCE_MS = 300000; 
-        const SCAN_INTERVAL_MS = 3000; // Increased to 3 seconds
+        const SCAN_INTERVAL_MS = 1000; // Scans every 1 second
+        const REQUIRED_MATCHES = 2;    // Must read the exact same number 2 times to confirm
         // ---------------------
         
         let worker;
         const recentReads = {}; 
+        
+        // Error Correction State
+        let pendingCabinId = null;
+        let matchStreak = 0;
 
         function logMessage(msg, type = 'normal') {
             const time = new Date().toLocaleTimeString();
@@ -116,17 +121,50 @@
 
             try {
                 const { data: { text } } = await worker.recognize(imageData);
-                
-                // Strip all spaces and line breaks from the result
                 const cleanedText = text.replace(/\s+/g, '');
 
-                // Only proceed if the result is EXACTLY 2 or 3 digits
-                if (/^\d{2,3}$/.test(cleanedText)) {
-                    handleDetection(cleanedText);
-                } else if (cleanedText.length > 0) {
-                    statusDiv.innerText = `Ignored invalid read: ${cleanedText}`;
+                // If Tesseract sees nothing, keep the streak alive but wait
+                if (cleanedText.length === 0) {
+                    statusDiv.innerText = pendingCabinId 
+                        ? `Lost sight of ${pendingCabinId}... waiting` 
+                        : "Waiting for cabin...";
+                    return; 
+                }
+
+                // Ensure it is 1 to 3 digits
+                if (/^\d{1,3}$/.test(cleanedText)) {
+                    const cabinNum = parseInt(cleanedText, 10);
+                    
+                    // Strict limit: Cabins 1 through 111
+                    if (cabinNum >= 1 && cabinNum <= 111) {
+                        
+                        // Error Correction: Check if it matches the pending read
+                        if (pendingCabinId === cabinNum) {
+                            matchStreak++;
+                            statusDiv.innerText = `Confirming ${cabinNum}... (${matchStreak}/${REQUIRED_MATCHES})`;
+                            
+                            // If it hits the required streak, log it!
+                            if (matchStreak >= REQUIRED_MATCHES) {
+                                handleDetection(cabinNum);
+                                pendingCabinId = null; // Reset streak
+                                matchStreak = 0;
+                            }
+                        } else {
+                            // Start a new streak for a newly spotted number
+                            pendingCabinId = cabinNum;
+                            matchStreak = 1;
+                            statusDiv.innerText = `Spotted ${cabinNum}, waiting to verify...`;
+                        }
+                        
+                    } else {
+                        statusDiv.innerText = `Ignored (Out of range): ${cabinNum}`;
+                        pendingCabinId = null; // Break streak
+                        matchStreak = 0;
+                    }
                 } else {
-                    statusDiv.innerText = "Waiting for cabin...";
+                    statusDiv.innerText = `Ignored (Not a valid number): ${cleanedText}`;
+                    pendingCabinId = null; // Break streak
+                    matchStreak = 0;
                 }
             } catch (err) {
                 console.error("OCR Error:", err);
@@ -145,7 +183,6 @@
             logMessage(`✅ Cabin ${cabinId} Arrived!`, 'highlight');
             statusDiv.innerText = `Logged Cabin ${cabinId}`;
 
-            // Changed Content-Type to text/plain to bypass CORS preflight blocking
             fetch(WEBHOOK_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'text/plain;charset=utf-8' },
