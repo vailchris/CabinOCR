@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gondola OCR Tracker</title>
-    <!-- Load Tesseract.js from CDN -->
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <style>
         body {
@@ -25,39 +24,19 @@
             border-radius: 8px;
             overflow: hidden;
         }
-        video {
-            width: 100%;
-            display: block;
-            background: #000;
-        }
-        canvas {
-            display: none; 
-        }
+        video { width: 100%; display: block; background: #000; }
+        canvas { display: none; }
         #status {
-            margin-top: 15px;
-            padding: 10px;
-            background: #222;
-            border-radius: 6px;
-            width: 100%;
-            max-width: 380px;
-            text-align: center;
+            margin-top: 15px; padding: 10px; background: #222;
+            border-radius: 6px; width: 100%; max-width: 380px; text-align: center;
         }
         #log {
-            margin-top: 15px;
-            width: 100%;
-            max-width: 380px;
-            height: 200px;
-            background: #000;
-            color: #0f0;
-            padding: 10px;
-            font-family: monospace;
-            overflow-y: auto;
-            border-radius: 6px;
+            margin-top: 15px; width: 100%; max-width: 380px; height: 200px;
+            background: #000; color: #0f0; padding: 10px;
+            font-family: monospace; overflow-y: auto; border-radius: 6px;
         }
-        .highlight {
-            color: #ffaa00;
-            font-weight: bold;
-        }
+        .highlight { color: #ffaa00; font-weight: bold; }
+        .error { color: #ff5555; }
     </style>
 </head>
 <body>
@@ -69,7 +48,6 @@
     </div>
     
     <canvas id="captureCanvas"></canvas>
-
     <div id="status">Initializing Tesseract.js...</div>
     <div id="log"></div>
 
@@ -81,20 +59,20 @@
         const logDiv = document.getElementById('log');
 
         // --- CONFIGURATION ---
-        // REPLACE THIS with your actual Google Apps Script web app URL or Zapier webhook
-        const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbw3cTkPeC1rqETIDWgqJhsKdWOygcKr-gSByLXqi47I6E_NCmkqZEfR9-BIHHxZnM2K7g/exec"; 
-        const DEBOUNCE_MS = 300000; // 5 minutes before logging the same cabin again
-        const SCAN_INTERVAL_MS = 1000; // 1 second between frame scans
+        const WEBHOOK_URL = "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"; 
+        const DEBOUNCE_MS = 300000; 
+        const SCAN_INTERVAL_MS = 3000; // Increased to 3 seconds
         // ---------------------
         
         let worker;
         const recentReads = {}; 
 
-        function logMessage(msg, isHighlight = false) {
+        function logMessage(msg, type = 'normal') {
             const time = new Date().toLocaleTimeString();
             const span = document.createElement('div');
             span.innerHTML = `[${time}] ${msg}`;
-            if (isHighlight) span.className = 'highlight';
+            if (type === 'highlight') span.className = 'highlight';
+            if (type === 'error') span.className = 'error';
             logDiv.prepend(span); 
         }
 
@@ -103,7 +81,7 @@
                 worker = await Tesseract.createWorker('eng', 1, {
                     logger: m => {
                         if(m.status === "recognizing text") {
-                           statusDiv.innerText = `Scanning frame... ${Math.round(m.progress * 100)}%`;
+                           statusDiv.innerText = `Scanning... ${Math.round(m.progress * 100)}%`;
                         }
                     }
                 });
@@ -112,9 +90,7 @@
                     tessedit_char_whitelist: '0123456789',
                 });
 
-                logMessage("Tesseract initialized.");
-                statusDiv.innerText = "Requesting camera access...";
-
+                statusDiv.innerText = "Requesting camera...";
                 const stream = await navigator.mediaDevices.getUserMedia({ 
                     video: { facingMode: "environment" } 
                 });
@@ -128,8 +104,7 @@
                 };
 
             } catch (err) {
-                logMessage(`Error: ${err.message}`);
-                statusDiv.innerText = "Failed to start. Check permissions.";
+                logMessage(`Error: ${err.message}`, 'error');
             }
         }
 
@@ -141,10 +116,15 @@
 
             try {
                 const { data: { text } } = await worker.recognize(imageData);
-                const cabinNumber = text.trim();
+                
+                // Strip all spaces and line breaks from the result
+                const cleanedText = text.replace(/\s+/g, '');
 
-                if (cabinNumber.length > 0) {
-                    handleDetection(cabinNumber);
+                // Only proceed if the result is EXACTLY 2 or 3 digits
+                if (/^\d{2,3}$/.test(cleanedText)) {
+                    handleDetection(cleanedText);
+                } else if (cleanedText.length > 0) {
+                    statusDiv.innerText = `Ignored invalid read: ${cleanedText}`;
                 } else {
                     statusDiv.innerText = "Waiting for cabin...";
                 }
@@ -162,22 +142,22 @@
             }
 
             recentReads[cabinId] = now;
-            logMessage(`✅ Cabin ${cabinId} Arrived!`, true);
+            logMessage(`✅ Cabin ${cabinId} Arrived!`, 'highlight');
             statusDiv.innerText = `Logged Cabin ${cabinId}`;
 
+            // Changed Content-Type to text/plain to bypass CORS preflight blocking
             fetch(WEBHOOK_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                mode: 'no-cors', // Important to prevent CORS errors on simple webhook posts
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({
                     cabin_id: cabinId,
                     timestamp: new Date().toISOString(),
                     method: "browser_ocr"
                 })
             }).then(() => {
-                logMessage(`Webhook triggered for ${cabinId}`);
+                logMessage(`Webhook success for ${cabinId}`);
             }).catch(err => {
-                logMessage(`Webhook error: ${err.message}`);
+                logMessage(`Webhook error: ${err.message}`, 'error');
             });
         }
 
