@@ -23,22 +23,20 @@
             border: 3px solid #333;
             border-radius: 8px;
             overflow: hidden;
-            /* Required to position the target box correctly */
             display: flex;
-            justify-content: center;
-            align-items: center;
         }
         video { width: 100%; display: block; background: #000; }
         
-        /* The Visual Targeting Box */
+        /* The Visual Targeting Box moved to the bottom */
         #target-box {
             position: absolute;
             width: 50%;
             height: 30%;
+            bottom: 10%;
+            left: 25%; /* Centers the 50% width box horizontally */
             border: 3px dashed #00ff00;
             box-sizing: border-box;
             z-index: 10;
-            /* Dims the surrounding video so you know what is being ignored */
             box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6); 
             pointer-events: none;
         }
@@ -79,9 +77,9 @@
         const logDiv = document.getElementById('log');
 
         // --- CONFIGURATION ---
-        const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbw3cTkPeC1rqETIDWgqJhsKdWOygcKr-gSByLXqi47I6E_NCmkqZEfR9-BIHHxZnM2K7g/exec"; 
-        const DEBOUNCE_MS = 300000; 
-        const SCAN_INTERVAL_MS = 500;  // Sped up to catch the cabin while centered
+        const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwxK9t3B7yWGHreyvDIQaa9rojlnSU8YALp2CmSlXZNVknYAW3xWjxdNqe7Z9WEm5PasA/exec"; 
+        const DEBOUNCE_MS = 60000; 
+        const SCAN_INTERVAL_MS = 500;  
         const REQUIRED_MATCHES = 2;    
         // ---------------------
         
@@ -111,6 +109,7 @@
                 
                 await worker.setParameters({
                     tessedit_char_whitelist: '0123456789',
+                    tessedit_pageseg_mode: '8' // Forces "Single Word" mode for better accuracy against lines/borders
                 });
 
                 statusDiv.innerText = "Requesting camera...";
@@ -132,19 +131,19 @@
         async function scanFrame() {
             if (video.paused || video.ended) return;
 
-            // Define the crop area to match the CSS target box (Center 50% width, 30% height)
+            // Define the crop area to match the bottom-aligned target box
             const videoW = video.videoWidth;
             const videoH = video.videoHeight;
             const cropW = videoW * 0.5;
             const cropH = videoH * 0.3;
             const cropX = (videoW - cropW) / 2;
-            const cropY = (videoH - cropH) / 2;
+            const cropY = videoH - cropH - (videoH * 0.1); // Matches the bottom: 10% CSS alignment
 
             // Size the hidden canvas strictly to the cropped dimensions
             canvas.width = cropW;
             canvas.height = cropH;
 
-            // Draw ONLY the cropped center of the video feed to the canvas
+            // Draw ONLY the cropped bottom area of the video feed to the canvas
             ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
             
             const imageData = canvas.toDataURL('image/jpeg');
